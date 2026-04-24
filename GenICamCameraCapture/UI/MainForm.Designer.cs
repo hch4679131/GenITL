@@ -205,7 +205,7 @@ partial class MainForm
         pnlCircleActions = new Panel { Dock = DockStyle.Bottom, Height = 68, BackColor = Color.White, Padding = Padding.Empty };
         pnlCircleActions.Controls.AddRange(new Control[] { btnSelectAll, btnDeselectAll, lblCircleCount });
 
-        pnlRight = new Panel { Width = 390, Dock = DockStyle.Right, BackColor = Color.White };
+        pnlRight = new Panel { Width = 450, Dock = DockStyle.Right, BackColor = Color.White };
         pnlRight.Controls.Add(jointCirclePanel);
         pnlRight.Controls.Add(pnlCircleActions);
         pnlRight.Controls.Add(lblCircleTitle);

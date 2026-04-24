@@ -534,29 +534,41 @@ public partial class MainForm : Form
         int imgW, imgH;
         lock (_bitmapLock) { imgW = _cameraBitmap!.Width; imgH = _cameraBitmap.Height; }
 
-        // Mock 检测：模拟 48 / 54 / 72 三种料型，可替换为真实算法
-        var rng        = new Random();
-        int[] counts   = { 48, 54, 72 };
-        int detectedN  = counts[rng.Next(counts.Length)];
+        // Mock 检测：模拟 48 / 54 / 72 三种料型（每圈等分），可替换为真实算法
+        var   rng       = new Random();
+        int[] totalCounts = { 48, 54, 72 };
+        int   detectedN = totalCounts[rng.Next(totalCounts.Length)];
+        // 每圈焊点数（整除后取近似）
+        int   perRing   = detectedN / JointCirclePanel.RingCount;
 
-        for (int i = 0; i < detectedN; i++)
+        var presentIds = new List<int>();
+        for (int ring = 0; ring < JointCirclePanel.RingCount; ring++)
         {
-            _solderJoints.Add(new SolderJoint
+            // 在 0..71 范围内均匀选 perRing 个槽位
+            for (int k = 0; k < perRing; k++)
             {
-                Id         = _nextJointId++,
-                X          = rng.Next(40, imgW - 40),
-                Y          = rng.Next(40, imgH - 40),
-                IsSelected = true
-            });
+                int pos    = (int)Math.Round((double)k * JointCirclePanel.SlotsPerRing / perRing);
+                int slotId = ring * JointCirclePanel.SlotsPerRing + pos + 1; // 1-based
+                presentIds.Add(slotId);
+
+                // 为该焊点生成相机坐标（Mock：随机，实际由算法填入）
+                _solderJoints.Add(new SolderJoint
+                {
+                    Id         = slotId,
+                    X          = rng.Next(40, imgW - 40),
+                    Y          = rng.Next(40, imgH - 40),
+                    IsSelected = true
+                });
+                _nextJointId = slotId + 1;
+            }
         }
 
-        // 将检测到的焊点 ID 传给圈圈面板
-        jointCirclePanel.SetPresentJoints(_solderJoints.Select(j => j.Id));
-        // 确保 _solderJoints 的 IsSelected 与圈圈初始状态（全选）同步
+        // 将检测到的焊点 ID 传给圈圈面板（其余槽位自动变灰）
+        jointCirclePanel.SetPresentJoints(presentIds);
         SyncJointsFromPanel();
         UpdateCircleCount();
         picCamera.Invalidate();
-        AppendLog($"检测到 {detectedN} 个焊点（模拟数据），已显示在右侧选择界面");
+        AppendLog($"检测到 {presentIds.Count} 个焊点（{detectedN} 型，每圈 {perRing} 个），已显示在右侧");
     }
 
     // ─────────────────────────────────────────────────────────

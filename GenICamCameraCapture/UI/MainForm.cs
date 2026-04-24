@@ -3,6 +3,7 @@ using System.Drawing.Imaging;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
+using GenICamCameraCapture.Calibration;
 using GenICamCameraCapture.Camera;
 using GenICamCameraCapture.Models;
 using GenICamCameraCapture.Providers;
@@ -43,6 +44,9 @@ public partial class MainForm : Form
     private readonly List<SolderJoint> _solderJoints = new();
     private int  _nextJointId   = 1;
     private int? _focusedJointId;          // 当前放大显示的焊点
+
+    // ── 9点标定 ───────────────────────────────────────────────
+    private float[,]? _calibMatrix; // null = 未标定，发送时直接用像素坐标
 
     // ── 模式 & 焊接状态 ───────────────────────────────────────
     private bool _isAutoMode = true;
@@ -88,6 +92,9 @@ public partial class MainForm : Form
         btnPauseWelding.Click += BtnPauseWelding_Click;
         btnStopWelding.Click  += BtnStopWelding_Click;
 
+        // 9点标定
+        btnOpenCalib.Click += BtnOpenCalib_Click;
+
         // 日志
         btnClearLog.Click += (_, _) => txtLog.Clear();
 
@@ -101,8 +108,11 @@ public partial class MainForm : Form
         SetMode(true);
         UpdateCircleCount();
 
+        TryLoadCalibFromFile();
+
         AppendLog("GenICam/GenTL 焊点检测系统已启动");
         AppendLog("流程: ① 拍照 → ② 识别焊点 → ③ 右侧圈圈选择 → ④ 选择模式 → ⑤ 开始焊接");
+        AppendLog("提示: 左侧「9点标定」可建立像素→机器人坐标映射");
     }
 
     // ─────────────────────────────────────────────────────────
@@ -835,15 +845,21 @@ public partial class MainForm : Form
     // ─────────────────────────────────────────────────────────
     private void SendJointCoordinates(List<SolderJoint> joints)
     {
+        bool hasCalib = _calibMatrix != null;
         var sb = new StringBuilder("[");
         for (int i = 0; i < joints.Count; i++)
         {
             var j = joints[i];
-            sb.Append($"{{\"id\":{j.Id},\"x\":{j.X:F2},\"y\":{j.Y:F2}}}");
+            float sendX = j.X, sendY = j.Y;
+            if (hasCalib)
+                (sendX, sendY) = CalibrationEngine.PixelToRobot(_calibMatrix!, j.X, j.Y);
+
+            sb.Append($"{{\"id\":{j.Id},\"x\":{sendX:F3},\"y\":{sendY:F3}}}");
             if (i < joints.Count - 1) sb.Append(',');
         }
         sb.Append(']');
         string json = sb.ToString();
+        if (hasCalib) AppendLog("坐标已转换为机器人世界坐标（mm）");
 
         bool sent = false;
         try
@@ -863,6 +879,39 @@ public partial class MainForm : Form
             File.WriteAllText(path, json, Encoding.UTF8);
             AppendLog($"已写入焊点坐标到文件: weld_joints.json（共 {joints.Count} 个）");
         }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // 9点标定
+    // ─────────────────────────────────────────────────────────
+    private void BtnOpenCalib_Click(object? sender, EventArgs e)
+    {
+        Bitmap? Grab()
+        {
+            lock (_bitmapLock) { return _cameraBitmap == null ? null : (Bitmap)_cameraBitmap.Clone(); }
+        }
+
+        using var form = new CalibrationForm(Grab);
+        if (form.ShowDialog(this) == DialogResult.OK && form.CalibMatrix != null)
+        {
+            _calibMatrix = form.CalibMatrix;
+            lblCalibStatus.Text      = "标定：已标定 ✓";
+            lblCalibStatus.ForeColor = Color.FromArgb(39, 174, 96);
+            AppendLog("9点标定矩阵已应用，后续坐标发送将转换为机器人坐标");
+        }
+    }
+
+    // 尝试从上次保存的文件加载标定矩阵
+    private void TryLoadCalibFromFile()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "calib_matrix.json");
+        if (!File.Exists(path)) return;
+        var m = CalibrationEngine.MatrixFromJson(File.ReadAllText(path));
+        if (m == null) return;
+        _calibMatrix = m;
+        lblCalibStatus.Text      = "标定：已加载（上次）✓";
+        lblCalibStatus.ForeColor = Color.DarkOrange;
+        AppendLog("已从文件加载上次标定矩阵");
     }
 
     // ─────────────────────────────────────────────────────────

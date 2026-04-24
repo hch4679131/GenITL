@@ -3,6 +3,8 @@ namespace GenICamCameraCapture.UI;
 partial class MainForm
 {
     // ── 左侧相机控制栏 ────────────────────────────────────────
+    private Button       btnOpenCalib      = null!;
+    private Label        lblCalibStatus    = null!;
     private Panel        pnlCameraControls = null!;
     private GroupBox     grpCameraSettings = null!;
     private Label        lblProvider       = null!;
@@ -161,6 +163,29 @@ partial class MainForm
             lblStateLbl, lblState, lblFrameCountLbl, lblFrameCount,
             lblFpsLbl, lblFps, lblResolutionLbl, lblResolution, lblPixelFmtLbl, lblPixelFmt });
 
+        // 9点标定按钮（放在相机控制栏底部）
+        btnOpenCalib = new Button
+        {
+            Text      = "📐  9点标定",
+            Location  = new Point(4, 600),
+            Size      = new Size(233, 30),
+            BackColor = Color.FromArgb(52, 100, 160),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Font      = new Font("微软雅黑", 9.5f, FontStyle.Bold)
+        };
+        btnOpenCalib.FlatAppearance.BorderSize = 0;
+
+        lblCalibStatus = new Label
+        {
+            Text      = "标定：未标定",
+            Location  = new Point(4, 634),
+            Size      = new Size(233, 18),
+            TextAlign = ContentAlignment.MiddleCenter,
+            ForeColor = Color.Gray,
+            Font      = new Font("微软雅黑", 8f)
+        };
+
         pnlCameraControls = new Panel
         {
             Width      = 245,
@@ -170,7 +195,8 @@ partial class MainForm
             Padding    = Padding.Empty
         };
         pnlCameraControls.Controls.AddRange(new Control[] {
-            grpCameraSettings, grpDeviceList, grpAcquisition, grpExposure, grpStatus });
+            grpCameraSettings, grpDeviceList, grpAcquisition, grpExposure, grpStatus,
+            btnOpenCalib, lblCalibStatus });
     }
 
     // ─────────────────────────────────────────────────────────

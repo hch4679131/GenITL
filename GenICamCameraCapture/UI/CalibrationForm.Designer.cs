@@ -54,8 +54,8 @@ partial class CalibrationForm
         Font          = new Font("微软雅黑", 9f);
         BackColor     = Color.FromArgb(36, 38, 46);
 
-        Controls.Add(pnlPreview);    // DockLeft
-        Controls.Add(pnlControls);  // DockFill
+        Controls.Add(pnlControls);  // DockFill — 先加，最后填充剩余空间
+        Controls.Add(pnlPreview);   // DockLeft  — 后加，先占左侧区域
 
         ResumeLayout(false);
     }

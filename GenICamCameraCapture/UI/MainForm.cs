@@ -12,39 +12,40 @@ namespace GenICamCameraCapture.UI;
 public partial class MainForm : Form
 {
     // ── 相机 ──────────────────────────────────────────────────
-    private CameraManager? _manager;
-    private CameraDevice? _camera;
+    private CameraManager?   _manager;
+    private CameraDevice?    _camera;
     private ICameraProvider? _currentProvider;
     private readonly List<DeviceItem> _deviceItems = new();
 
-    private int _frameCount;
-    private int _savedCount;
-    private DateTime _lastFpsTime = DateTime.Now;
-    private int _lastFpsFrameCount;
+    private int      _frameCount;
+    private int      _savedCount;
+    private DateTime _lastFpsTime       = DateTime.Now;
+    private int      _lastFpsFrameCount;
     private readonly System.Windows.Forms.Timer _uiTimer;
     private readonly object _frameLock = new();
 
     // 线扫拼接缓冲
     private const int LineScanAccumulateRows = 512;
     private byte[]? _lineScanBuffer;
-    private int _lineScanWidth;
-    private int _lineScanBytesPerPixel;
-    private int _lineScanCurrentRow;
-    private bool _lineScanDirty;
+    private int     _lineScanWidth;
+    private int     _lineScanBytesPerPixel;
+    private int     _lineScanCurrentRow;
+    private bool    _lineScanDirty;
 
-    private FrameData? _latestAreaFrame;
-    private volatile bool _autoSaveEnabled;
+    private FrameData?      _latestAreaFrame;
+    private volatile bool   _autoSaveEnabled;
 
     // ── 图像显示 ──────────────────────────────────────────────
-    private Bitmap? _cameraBitmap;
+    private Bitmap?      _cameraBitmap;
     private readonly object _bitmapLock = new();
 
     // ── 焊点 ──────────────────────────────────────────────────
     private readonly List<SolderJoint> _solderJoints = new();
-    private int _nextJointId = 1;
-    private bool _suppressListViewCheck; // 防止递归
+    private int  _nextJointId   = 1;
+    private int? _focusedJointId;          // 当前放大显示的焊点
 
-    // ── 焊接状态 ──────────────────────────────────────────────
+    // ── 模式 & 焊接状态 ───────────────────────────────────────
+    private bool _isAutoMode = true;
     private enum WeldingState { Idle, Welding, Paused }
     private WeldingState _weldingState = WeldingState.Idle;
 
@@ -53,43 +54,55 @@ public partial class MainForm : Form
     {
         InitializeComponent();
 
-        // 设置 CTI 默认路径（华睿）
         txtCtiPath.Text = Path.Combine(AppContext.BaseDirectory, @"GenTL\Runtime\MVProducerCXP.cti");
 
         _uiTimer = new System.Windows.Forms.Timer { Interval = 100 };
         _uiTimer.Tick += UiTimer_Tick;
         _uiTimer.Start();
 
-        // 事件绑定
+        // 相机控制事件
         cboProvider.SelectedIndexChanged += CboProvider_SelectedIndexChanged;
-        btnBrowseCti.Click += BtnBrowseCti_Click;
-        btnInitialize.Click += BtnInitialize_Click;
-        btnEnumerate.Click += BtnEnumerate_Click;
-        btnConnect.Click += BtnConnect_Click;
-        btnDisconnect.Click += BtnDisconnect_Click;
-        btnStartGrab.Click += BtnStartGrab_Click;
-        btnStopGrab.Click += BtnStopGrab_Click;
-        btnGetExposure.Click += BtnGetExposure_Click;
-        btnSetExposure.Click += BtnSetExposure_Click;
+        btnBrowseCti.Click    += BtnBrowseCti_Click;
+        btnInitialize.Click   += BtnInitialize_Click;
+        btnEnumerate.Click    += BtnEnumerate_Click;
+        btnConnect.Click      += BtnConnect_Click;
+        btnDisconnect.Click   += BtnDisconnect_Click;
+        btnStartGrab.Click    += BtnStartGrab_Click;
+        btnStopGrab.Click     += BtnStopGrab_Click;
+        btnGetExposure.Click  += BtnGetExposure_Click;
+        btnSetExposure.Click  += BtnSetExposure_Click;
 
-        btnCapturePhoto.Click += BtnCapturePhoto_Click;
-        btnDetectJoints.Click += BtnDetectJoints_Click;
-        btnSelectAll.Click += (_, _) => SetAllJointsSelected(true);
-        btnDeselectAll.Click += (_, _) => SetAllJointsSelected(false);
-        listViewJoints.ItemChecked += ListViewJoints_ItemChecked;
+        // 工作流事件
+        btnCapturePhoto.Click  += BtnCapturePhoto_Click;
+        btnDetectJoints.Click  += BtnDetectJoints_Click;
+        btnAutoMode.Click      += (_, _) => SetMode(true);
+        btnManualMode.Click    += (_, _) => SetMode(false);
+        btnSelectAll.Click     += (_, _) => { jointCirclePanel.SelectAll();   SyncJointsFromPanel(); UpdateCircleCount(); picCamera.Invalidate(); };
+        btnDeselectAll.Click   += (_, _) => { jointCirclePanel.SelectNone();  SyncJointsFromPanel(); UpdateCircleCount(); picCamera.Invalidate(); };
 
+        // 圈圈选择事件
+        jointCirclePanel.JointToggled += JointCircle_JointToggled;
+
+        // 焊接按钮
         btnStartWelding.Click += BtnStartWelding_Click;
         btnPauseWelding.Click += BtnPauseWelding_Click;
-        btnStopWelding.Click += BtnStopWelding_Click;
+        btnStopWelding.Click  += BtnStopWelding_Click;
+
+        // 日志
         btnClearLog.Click += (_, _) => txtLog.Clear();
 
-        picCamera.Paint += PicCamera_Paint;
+        // 相机画面叠层
+        picCamera.Paint      += PicCamera_Paint;
         picCamera.MouseClick += PicCamera_MouseClick;
 
         FormClosing += MainForm_FormClosing;
 
-        AppendLog("GenICam/GenTL 统一相机采集系统 已启动");
-        AppendLog("提示: 点击图像上的焊点圆圈可切换选中状态");
+        // 初始模式状态
+        SetMode(true);
+        UpdateCircleCount();
+
+        AppendLog("GenICam/GenTL 焊点检测系统已启动");
+        AppendLog("流程: ① 拍照 → ② 识别焊点 → ③ 右侧圈圈选择 → ④ 选择模式 → ⑤ 开始焊接");
     }
 
     // ─────────────────────────────────────────────────────────
@@ -98,8 +111,7 @@ public partial class MainForm : Form
     private void AppendLog(string msg)
     {
         if (InvokeRequired) { BeginInvoke(() => AppendLog(msg)); return; }
-        string line = $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n";
-        txtLog.AppendText(line);
+        txtLog.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n");
         txtLog.SelectionStart = txtLog.Text.Length;
         txtLog.ScrollToCaret();
     }
@@ -112,7 +124,6 @@ public partial class MainForm : Form
         txtCtiPath.Text = cboProvider.SelectedIndex == 1
             ? Path.Combine(AppContext.BaseDirectory, @"GenTL\Runtime\MVProducerGEV.cti")
             : Path.Combine(AppContext.BaseDirectory, @"GenTL\Runtime\MVProducerCXP.cti");
-
         _currentProvider = null;
         _camera = null;
         _deviceItems.Clear();
@@ -129,8 +140,7 @@ public partial class MainForm : Form
             Filter = "GenTL Producer (*.cti)|*.cti|所有文件 (*.*)|*.*",
             InitialDirectory = Path.GetDirectoryName(txtCtiPath.Text) ?? @"C:\"
         };
-        if (dlg.ShowDialog() == DialogResult.OK)
-            txtCtiPath.Text = dlg.FileName;
+        if (dlg.ShowDialog() == DialogResult.OK) txtCtiPath.Text = dlg.FileName;
     }
 
     // ─────────────────────────────────────────────────────────
@@ -146,17 +156,13 @@ public partial class MainForm : Form
                 MessageBox.Show($"CTI 文件不存在:\n{ctiPath}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
-
             _manager?.Dispose();
             _manager = new CameraManager();
-
             _currentProvider = cboProvider.SelectedIndex == 1
                 ? (ICameraProvider)new HikvisionProvider(ctiPath)
                 : new HuarayProvider(ctiPath);
-
             _manager.RegisterProvider(_currentProvider);
             _manager.InitializeAll();
-
             AppendLog("CTI 初始化成功");
             SetStatus("已初始化", Color.DarkOrange);
             btnEnumerate.Enabled = true;
@@ -177,14 +183,12 @@ public partial class MainForm : Form
             var allDevices = _manager.EnumerateAllDevices();
             _deviceItems.Clear();
             lstDevices.Items.Clear();
-
             foreach (var (provider, info) in allDevices)
             {
                 var item = new DeviceItem { Provider = provider, Info = info };
                 _deviceItems.Add(item);
                 lstDevices.Items.Add(item);
             }
-
             AppendLog($"枚举完成，找到 {allDevices.Count} 个设备");
             if (allDevices.Count > 0) { lstDevices.SelectedIndex = 0; btnConnect.Enabled = true; }
             else AppendLog("未找到设备，请检查相机连接");
@@ -200,26 +204,22 @@ public partial class MainForm : Form
         try
         {
             if (_manager == null || lstDevices.SelectedItem is not DeviceItem selected) return;
-
             _camera = _manager.OpenDevice(selected.Provider, selected.Info);
-            _camera.OnLog += AppendLog;
+            _camera.OnLog          += AppendLog;
             _camera.OnFrameReceived += OnFrameReceived;
-
             AppendLog($"已连接: {selected.Info.Model} (SN:{selected.Info.SerialNumber})");
             SetStatus("已连接", Color.Green);
-
-            btnConnect.Enabled = false;
+            btnConnect.Enabled    = false;
             btnDisconnect.Enabled = true;
-            btnStartGrab.Enabled = true;
-            btnEnumerate.Enabled = false;
-
+            btnStartGrab.Enabled  = true;
+            btnEnumerate.Enabled  = false;
             try
             {
                 _camera.ParseXmlRegisters();
                 bool hasExp = _camera.HasExposureControl;
                 txtExposureTime.Enabled = hasExp;
-                btnGetExposure.Enabled = hasExp;
-                btnSetExposure.Enabled = hasExp;
+                btnGetExposure.Enabled  = hasExp;
+                btnSetExposure.Enabled  = hasExp;
                 if (hasExp)
                 {
                     double cur = _camera.GetExposureTime();
@@ -244,20 +244,20 @@ public partial class MainForm : Form
             {
                 if (_camera.IsGrabbing) StopGrabbing();
                 _camera.OnFrameReceived -= OnFrameReceived;
-                _camera.OnLog -= AppendLog;
+                _camera.OnLog           -= AppendLog;
                 _camera.Dispose();
                 _camera = null;
             }
             AppendLog("已断开设备");
             SetStatus("已断开", Color.Gray);
-            btnConnect.Enabled = true;
-            btnDisconnect.Enabled = false;
-            btnStartGrab.Enabled = false;
-            btnStopGrab.Enabled = false;
-            btnEnumerate.Enabled = true;
+            btnConnect.Enabled     = true;
+            btnDisconnect.Enabled  = false;
+            btnStartGrab.Enabled   = false;
+            btnStopGrab.Enabled    = false;
+            btnEnumerate.Enabled   = true;
             txtExposureTime.Enabled = false;
-            btnGetExposure.Enabled = false;
-            btnSetExposure.Enabled = false;
+            btnGetExposure.Enabled  = false;
+            btnSetExposure.Enabled  = false;
         }
         catch (Exception ex) { AppendLog($"断开失败: {ex.Message}"); }
     }
@@ -272,15 +272,11 @@ public partial class MainForm : Form
             if (_camera == null) return;
             _frameCount = 0; _savedCount = 0;
             _lastFpsTime = DateTime.Now; _lastFpsFrameCount = 0;
-
             lock (_frameLock) { _lineScanBuffer = null; _lineScanCurrentRow = 0; _lineScanDirty = false; }
-
-            int bufCount = (int)nudBufferCount.Value;
-            _camera.StartGrab(bufCount);
-
+            _camera.StartGrab((int)nudBufferCount.Value);
             SetStatus("采集中...", Color.Green);
-            btnStartGrab.Enabled = false;
-            btnStopGrab.Enabled = true;
+            btnStartGrab.Enabled  = false;
+            btnStopGrab.Enabled   = true;
             btnDisconnect.Enabled = false;
         }
         catch (Exception ex)
@@ -298,8 +294,8 @@ public partial class MainForm : Form
         {
             _camera?.StopGrab();
             SetStatus("已停止", Color.DarkOrange);
-            btnStartGrab.Enabled = true;
-            btnStopGrab.Enabled = false;
+            btnStartGrab.Enabled  = true;
+            btnStopGrab.Enabled   = false;
             btnDisconnect.Enabled = true;
             AppendLog($"采集完成，共 {_frameCount} 帧");
         }
@@ -346,19 +342,16 @@ public partial class MainForm : Form
         {
             lock (_frameLock)
             {
-                int bpp = (frame.Width > 0 && frame.Height > 0)
-                    ? frame.Data.Length / (frame.Width * frame.Height) : 1;
+                int bpp = (frame.Width > 0 && frame.Height > 0) ? frame.Data.Length / (frame.Width * frame.Height) : 1;
                 if (bpp <= 0) bpp = 1;
                 int rowBytes = frame.Width * bpp;
 
                 if (_lineScanBuffer == null || _lineScanWidth != frame.Width || _lineScanBytesPerPixel != bpp)
                 {
-                    _lineScanWidth = frame.Width;
-                    _lineScanBytesPerPixel = bpp;
+                    _lineScanWidth = frame.Width; _lineScanBytesPerPixel = bpp;
                     _lineScanBuffer = new byte[rowBytes * LineScanAccumulateRows];
                     _lineScanCurrentRow = 0;
                 }
-
                 int rowsToCopy = Math.Min(frame.Height, LineScanAccumulateRows);
                 for (int r = 0; r < rowsToCopy; r++)
                 {
@@ -380,7 +373,7 @@ public partial class MainForm : Form
 
         if (_autoSaveEnabled && _frameCount % 10 == 0 && _savedCount < 50)
         {
-            string dir = Path.Combine(Path.GetDirectoryName(typeof(MainForm).Assembly.Location) ?? ".", "captures");
+            string dir  = Path.Combine(Path.GetDirectoryName(typeof(MainForm).Assembly.Location) ?? ".", "captures");
             Directory.CreateDirectory(dir);
             string path = Path.Combine(dir, $"frame_{frame.FrameId}_{frame.Width}x{frame.Height}.raw");
             frame.SaveRaw(path);
@@ -424,21 +417,22 @@ public partial class MainForm : Form
                     var bmp = BuildAreaBitmap(frame);
                     SetDisplayBitmap(bmp);
                     lblResolution.Text = $"{frame.Width} x {frame.Height}";
-                    lblPixelFmt.Text = $"0x{frame.PixelFormat:X8}";
+                    lblPixelFmt.Text   = $"0x{frame.PixelFormat:X8}";
                 }
                 catch { }
             }
         }
 
         lblFrameCount.Text = _frameCount.ToString();
-
         double elapsed = (DateTime.Now - _lastFpsTime).TotalSeconds;
         if (elapsed >= 1.0)
         {
-            lblFps.Text = $"{(_frameCount - _lastFpsFrameCount) / elapsed:F1}";
-            _lastFpsTime = DateTime.Now;
+            lblFps.Text        = $"{(_frameCount - _lastFpsFrameCount) / elapsed:F1}";
+            _lastFpsTime       = DateTime.Now;
             _lastFpsFrameCount = _frameCount;
         }
+
+        UpdateZoomView();
     }
 
     private void SetDisplayBitmap(Bitmap bmp)
@@ -446,15 +440,15 @@ public partial class MainForm : Form
         lock (_bitmapLock)
         {
             var old = _cameraBitmap;
-            _cameraBitmap = bmp;
+            _cameraBitmap  = bmp;
             picCamera.Image = bmp;
-            picCamera.Invalidate(); // 重绘焊点叠层
+            picCamera.Invalidate();
             old?.Dispose();
         }
     }
 
     // ─────────────────────────────────────────────────────────
-    // 位图构建（原始帧数据 → System.Drawing.Bitmap）
+    // 位图构建
     // ─────────────────────────────────────────────────────────
     private static Bitmap BuildAreaBitmap(FrameData frame)
     {
@@ -483,14 +477,10 @@ public partial class MainForm : Form
         var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
         int stride = bd.Stride;
         if (stride == w)
-        {
             Marshal.Copy(data, 0, bd.Scan0, Math.Min(data.Length, w * h));
-        }
         else
-        {
             for (int y = 0; y < h && y * w < data.Length; y++)
                 Marshal.Copy(data, y * w, bd.Scan0 + y * stride, Math.Min(w, data.Length - y * w));
-        }
         bmp.UnlockBits(bd);
         return bmp;
     }
@@ -498,11 +488,10 @@ public partial class MainForm : Form
     private static Bitmap BuildRgb24(byte[] data, int w, int h)
     {
         var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
-        var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
-        int stride = bd.Stride;
+        var bd  = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
         int rowBytes = w * 3;
         for (int y = 0; y < h && y * rowBytes < data.Length; y++)
-            Marshal.Copy(data, y * rowBytes, bd.Scan0 + y * stride, Math.Min(rowBytes, data.Length - y * rowBytes));
+            Marshal.Copy(data, y * rowBytes, bd.Scan0 + y * bd.Stride, Math.Min(rowBytes, data.Length - y * rowBytes));
         bmp.UnlockBits(bd);
         return bmp;
     }
@@ -510,8 +499,7 @@ public partial class MainForm : Form
     private static byte[] ExtractFirstChannel(byte[] data, int pixels, int bpp)
     {
         var gray = new byte[pixels];
-        for (int i = 0; i < pixels && i * bpp < data.Length; i++)
-            gray[i] = data[i * bpp];
+        for (int i = 0; i < pixels && i * bpp < data.Length; i++) gray[i] = data[i * bpp];
         return gray;
     }
 
@@ -520,12 +508,10 @@ public partial class MainForm : Form
     // ─────────────────────────────────────────────────────────
     private void BtnCapturePhoto_Click(object? sender, EventArgs e)
     {
-        // 使用最新的一帧（连续采集模式下已有帧；未采集则提示）
         var frame = Volatile.Read(ref _latestAreaFrame);
         if (frame != null && frame.Width > 0)
         {
-            var bmp = BuildAreaBitmap(frame);
-            SetDisplayBitmap(bmp);
+            SetDisplayBitmap(BuildAreaBitmap(frame));
             AppendLog($"已截取当前帧: {frame.Width}x{frame.Height}");
         }
         else
@@ -538,83 +524,118 @@ public partial class MainForm : Form
     {
         lock (_bitmapLock)
         {
-            if (_cameraBitmap == null)
-            {
-                AppendLog("请先拍照或开始采集");
-                return;
-            }
+            if (_cameraBitmap == null) { AppendLog("请先拍照或开始采集"); return; }
         }
 
-        // 此处为 Mock 检测，实际项目中替换为视觉算法调用
         _solderJoints.Clear();
-        _nextJointId = 1;
+        _nextJointId  = 1;
+        _focusedJointId = null;
 
         int imgW, imgH;
         lock (_bitmapLock) { imgW = _cameraBitmap!.Width; imgH = _cameraBitmap.Height; }
 
-        var rng = new Random();
-        int count = rng.Next(4, 9);
-        for (int i = 0; i < count; i++)
+        // Mock 检测：模拟 48 / 54 / 72 三种料型，可替换为真实算法
+        var rng        = new Random();
+        int[] counts   = { 48, 54, 72 };
+        int detectedN  = counts[rng.Next(counts.Length)];
+
+        for (int i = 0; i < detectedN; i++)
         {
             _solderJoints.Add(new SolderJoint
             {
-                Id = _nextJointId++,
-                X = rng.Next(40, imgW - 40),
-                Y = rng.Next(40, imgH - 40),
+                Id         = _nextJointId++,
+                X          = rng.Next(40, imgW - 40),
+                Y          = rng.Next(40, imgH - 40),
                 IsSelected = true
             });
         }
 
-        UpdateJointListView();
+        // 将检测到的焊点 ID 传给圈圈面板
+        jointCirclePanel.SetPresentJoints(_solderJoints.Select(j => j.Id));
+        // 确保 _solderJoints 的 IsSelected 与圈圈初始状态（全选）同步
+        SyncJointsFromPanel();
+        UpdateCircleCount();
         picCamera.Invalidate();
-        AppendLog($"检测到 {_solderJoints.Count} 个焊点（模拟数据）");
+        AppendLog($"检测到 {detectedN} 个焊点（模拟数据），已显示在右侧选择界面");
     }
 
     // ─────────────────────────────────────────────────────────
-    // 焊点列表管理
+    // 圈圈面板事件
     // ─────────────────────────────────────────────────────────
-    private void UpdateJointListView()
+    private void JointCircle_JointToggled(object? sender, int slotIndex)
     {
-        _suppressListViewCheck = true;
-        listViewJoints.BeginUpdate();
-        listViewJoints.Items.Clear();
+        int id = slotIndex + 1;
+        var joint = _solderJoints.FirstOrDefault(j => j.Id == id);
+        if (joint != null)
+            joint.IsSelected = jointCirclePanel.GetState(slotIndex) == JointCirclePanel.JointState.Selected;
 
+        _focusedJointId = id;
+        UpdateCircleCount();
+        picCamera.Invalidate();
+    }
+
+    // 将圈圈面板的当前状态同步回 _solderJoints
+    private void SyncJointsFromPanel()
+    {
         foreach (var j in _solderJoints)
-        {
-            var item = new ListViewItem(j.Label) { Checked = j.IsSelected, Tag = j };
-            item.SubItems.Add(j.X.ToString("F1"));
-            item.SubItems.Add(j.Y.ToString("F1"));
-            listViewJoints.Items.Add(item);
-        }
-
-        listViewJoints.EndUpdate();
-        _suppressListViewCheck = false;
-
-        int selected = _solderJoints.Count(x => x.IsSelected);
-        lblSelectedCount.Text = $"已选: {selected} / {_solderJoints.Count} 个焊点";
+            j.IsSelected = jointCirclePanel.GetState(j.Id - 1) == JointCirclePanel.JointState.Selected;
     }
 
-    private void ListViewJoints_ItemChecked(object? sender, ItemCheckedEventArgs e)
+    private void UpdateCircleCount()
     {
-        if (_suppressListViewCheck) return;
-        if (e.Item.Tag is SolderJoint joint)
-        {
-            joint.IsSelected = e.Item.Checked;
-            int selected = _solderJoints.Count(x => x.IsSelected);
-            lblSelectedCount.Text = $"已选: {selected} / {_solderJoints.Count} 个焊点";
-            picCamera.Invalidate();
-        }
-    }
-
-    private void SetAllJointsSelected(bool selected)
-    {
-        foreach (var j in _solderJoints) j.IsSelected = selected;
-        UpdateJointListView();
-        picCamera.Invalidate();
+        int sel   = jointCirclePanel.SelectedCount;
+        int total = jointCirclePanel.PresentCount;
+        lblCircleCount.Text = $"已选: {sel} / {total} 个焊点";
     }
 
     // ─────────────────────────────────────────────────────────
-    // 图像叠层绘制（在 PictureBox.Paint 中绘制焊点圆圈）
+    // 焊点放大图
+    // ─────────────────────────────────────────────────────────
+    private void UpdateZoomView()
+    {
+        if (_focusedJointId == null)
+        {
+            if (picZoom.Image != null) { picZoom.Image = null; }
+            return;
+        }
+
+        var joint = _solderJoints.FirstOrDefault(j => j.Id == _focusedJointId.Value);
+        if (joint == null) return;
+
+        Bitmap? src;
+        lock (_bitmapLock) { src = _cameraBitmap; }
+        if (src == null) return;
+
+        const int half = 70;
+        int cx = (int)joint.X, cy = (int)joint.Y;
+        int x  = Math.Clamp(cx - half, 0, src.Width  - 1);
+        int y  = Math.Clamp(cy - half, 0, src.Height - 1);
+        int w  = Math.Min(half * 2, src.Width  - x);
+        int h  = Math.Min(half * 2, src.Height - y);
+        if (w <= 0 || h <= 0) return;
+
+        var crop = new Bitmap(w, h);
+        try
+        {
+            using var g = Graphics.FromImage(crop);
+            g.InterpolationMode = InterpolationMode.NearestNeighbor;
+            g.DrawImage(src, new Rectangle(0, 0, w, h), new Rectangle(x, y, w, h), GraphicsUnit.Pixel);
+
+            // 画中心十字
+            using var pen = new Pen(Color.LimeGreen, 1f);
+            int mx = cx - x, my = cy - y;
+            g.DrawLine(pen, mx - 8, my, mx + 8, my);
+            g.DrawLine(pen, mx, my - 8, mx, my + 8);
+        }
+        catch { crop.Dispose(); return; }
+
+        var old = picZoom.Image;
+        picZoom.Image = crop;
+        old?.Dispose();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // 图像叠层绘制
     // ─────────────────────────────────────────────────────────
     private void PicCamera_Paint(object? sender, PaintEventArgs e)
     {
@@ -624,36 +645,43 @@ public partial class MainForm : Form
         if (bmp == null) return;
 
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-
         var imgRect = GetZoomRect(bmp, picCamera.ClientSize);
         if (imgRect.IsEmpty) return;
 
         float scale = imgRect.Width / bmp.Width;
-        float r = Math.Clamp(scale * 18f, 8f, 22f);
+        float r     = Math.Clamp(scale * 18f, 7f, 20f);
 
-        using var selPen = new Pen(Color.LimeGreen, 2.5f);
-        using var unselPen = new Pen(Color.OrangeRed, 2.5f);
-        using var selFill = new SolidBrush(Color.FromArgb(70, Color.LimeGreen));
-        using var unselFill = new SolidBrush(Color.FromArgb(60, Color.OrangeRed));
-        using var labelFont = new Font("Arial", 8f, FontStyle.Bold);
-        using var selLabelBrush = new SolidBrush(Color.LimeGreen);
-        using var unselLabelBrush = new SolidBrush(Color.OrangeRed);
+        using var selPen     = new Pen(Color.LimeGreen, 2f);
+        using var unselPen   = new Pen(Color.OrangeRed, 2f);
+        using var selFill    = new SolidBrush(Color.FromArgb(65, Color.LimeGreen));
+        using var unselFill  = new SolidBrush(Color.FromArgb(55, Color.OrangeRed));
+        using var labelFont  = new Font("Arial", 7.5f, FontStyle.Bold);
+        using var selBrush   = new SolidBrush(Color.LimeGreen);
+        using var unselBrush = new SolidBrush(Color.OrangeRed);
 
         foreach (var joint in _solderJoints)
         {
-            float dx = imgRect.X + joint.X * scale;
-            float dy = imgRect.Y + joint.Y * scale;
-            var pen = joint.IsSelected ? selPen : unselPen;
-            var fill = joint.IsSelected ? selFill : unselFill;
-            var lbrush = joint.IsSelected ? selLabelBrush : unselLabelBrush;
+            bool sel    = joint.IsSelected;
+            float dx    = imgRect.X + joint.X * scale;
+            float dy    = imgRect.Y + joint.Y * scale;
+            bool focused = joint.Id == _focusedJointId;
+
+            var pen   = sel ? selPen   : unselPen;
+            var fill  = sel ? selFill  : unselFill;
+            var lbr   = sel ? selBrush : unselBrush;
+
+            // 聚焦焊点画双圈
+            if (focused)
+            {
+                using var focusPen = new Pen(Color.Yellow, 1.5f);
+                e.Graphics.DrawEllipse(focusPen, dx - r - 4, dy - r - 4, (r + 4) * 2, (r + 4) * 2);
+            }
 
             e.Graphics.FillEllipse(fill, dx - r, dy - r, r * 2, r * 2);
-            e.Graphics.DrawEllipse(pen, dx - r, dy - r, r * 2, r * 2);
-            // 十字准线
+            e.Graphics.DrawEllipse(pen,  dx - r, dy - r, r * 2, r * 2);
             e.Graphics.DrawLine(pen, dx - r * 0.35f, dy, dx + r * 0.35f, dy);
             e.Graphics.DrawLine(pen, dx, dy - r * 0.35f, dx, dy + r * 0.35f);
-            // 标签
-            e.Graphics.DrawString(joint.Label, labelFont, lbrush, dx + r + 2, dy - 8);
+            e.Graphics.DrawString($"J{joint.Id}", labelFont, lbr, dx + r + 2, dy - 8);
         }
     }
 
@@ -667,9 +695,8 @@ public partial class MainForm : Form
         if (imgRect.IsEmpty) return;
 
         float scale = imgRect.Width / bmp.Width;
-        float imgX = (e.X - imgRect.X) / scale;
-        float imgY = (e.Y - imgRect.Y) / scale;
-
+        float imgX  = (e.X - imgRect.X) / scale;
+        float imgY  = (e.Y - imgRect.Y) / scale;
         if (imgX < 0 || imgY < 0 || imgX > bmp.Width || imgY > bmp.Height) return;
 
         float hitRadius = 22f / scale;
@@ -683,20 +710,60 @@ public partial class MainForm : Form
 
         if (nearest != null)
         {
-            nearest.IsSelected = !nearest.IsSelected;
-            UpdateJointListView();
+            // 同步圈圈面板
+            int slot = nearest.Id - 1;
+            if (slot >= 0 && slot < JointCirclePanel.TotalSlots)
+            {
+                nearest.IsSelected = !nearest.IsSelected;
+                if (nearest.IsSelected)
+                    jointCirclePanel.SelectAll(); // 临时 hack，实际应直接操作单个槽位
+                // 圈圈面板通过 JointToggled 反向同步，此处直接更新状态
+                var newState = nearest.IsSelected
+                    ? JointCirclePanel.JointState.Selected
+                    : JointCirclePanel.JointState.Unselected;
+                // JointCirclePanel 不对外暴露直接设置单个槽位 API，通过 SetPresentJoints 重置
+                // 简化处理：重新设置 panel，保留当前选中状态
+                ApplyJointsToPanel();
+            }
+
+            _focusedJointId = nearest.Id;
+            UpdateCircleCount();
             picCamera.Invalidate();
-            AppendLog($"焊点 {nearest.Label} 已{(nearest.IsSelected ? "选中" : "取消选中")}");
+            AppendLog($"焊点 J{nearest.Id} 已{(nearest.IsSelected ? "选中" : "取消选中")}");
         }
+    }
+
+    // 将 _solderJoints 的选中状态写回圈圈面板
+    private void ApplyJointsToPanel()
+    {
+        jointCirclePanel.SetPresentJoints(_solderJoints.Select(j => j.Id));
+        foreach (var j in _solderJoints)
+            jointCirclePanel.SetSlotSelected(j.Id - 1, j.IsSelected);
     }
 
     private static RectangleF GetZoomRect(Bitmap bmp, Size clientSize)
     {
-        float scaleX = (float)clientSize.Width / bmp.Width;
-        float scaleY = (float)clientSize.Height / bmp.Height;
-        float scale = Math.Min(scaleX, scaleY);
-        float w = bmp.Width * scale, h = bmp.Height * scale;
+        float sx = (float)clientSize.Width  / bmp.Width;
+        float sy = (float)clientSize.Height / bmp.Height;
+        float s  = Math.Min(sx, sy);
+        float w  = bmp.Width * s, h = bmp.Height * s;
         return new RectangleF((clientSize.Width - w) / 2f, (clientSize.Height - h) / 2f, w, h);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // 模式切换（自动 / 手动）
+    // ─────────────────────────────────────────────────────────
+    private void SetMode(bool autoMode)
+    {
+        _isAutoMode = autoMode;
+
+        // 激活态按钮高亮
+        btnAutoMode.BackColor   = autoMode ? Color.FromArgb(142, 68, 173) : Color.FromArgb(52, 55, 65);
+        btnAutoMode.ForeColor   = Color.White;
+        btnManualMode.BackColor = autoMode ? Color.FromArgb(52, 55, 65)   : Color.FromArgb(142, 68, 173);
+        btnManualMode.ForeColor = Color.White;
+
+        AppendLog($"焊接模式: {(autoMode ? "自动（全部选中焊点依次焊接）" : "手动（点击右侧圈圈选定单个焊点）")}");
     }
 
     // ─────────────────────────────────────────────────────────
@@ -710,14 +777,11 @@ public partial class MainForm : Form
             MessageBox.Show("请至少选择一个焊点", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-
-        // 将焊点坐标发送给另一个进程
         SendJointCoordinates(selected);
-
         _weldingState = WeldingState.Welding;
         UpdateWeldingButtons();
-        SetWeldStatus("焊接中...", Color.Green);
-        AppendLog($"[存根] 开始焊接，共 {selected.Count} 个焊点");
+        SetWeldStatus("焊接中...", Color.LimeGreen);
+        AppendLog($"[存根] 开始焊接，模式={(_isAutoMode ? "自动" : "手动")}，共 {selected.Count} 个焊点");
     }
 
     private void BtnPauseWelding_Click(object? sender, EventArgs e)
@@ -726,14 +790,14 @@ public partial class MainForm : Form
         {
             _weldingState = WeldingState.Paused;
             UpdateWeldingButtons();
-            SetWeldStatus("已暂停", Color.DarkOrange);
+            SetWeldStatus("已暂停", Color.Orange);
             AppendLog("[存根] 焊接已暂停");
         }
         else if (_weldingState == WeldingState.Paused)
         {
             _weldingState = WeldingState.Welding;
             UpdateWeldingButtons();
-            SetWeldStatus("焊接中...", Color.Green);
+            SetWeldStatus("焊接中...", Color.LimeGreen);
             AppendLog("[存根] 焊接已恢复");
         }
     }
@@ -742,16 +806,16 @@ public partial class MainForm : Form
     {
         _weldingState = WeldingState.Idle;
         UpdateWeldingButtons();
-        SetWeldStatus("就绪", Color.Gray);
+        SetWeldStatus("就绪", Color.FromArgb(130, 130, 140));
         AppendLog("[存根] 焊接已停止");
     }
 
     private void UpdateWeldingButtons()
     {
-        btnStartWelding.Enabled = _weldingState == WeldingState.Idle;
-        btnPauseWelding.Enabled = _weldingState == WeldingState.Welding || _weldingState == WeldingState.Paused;
-        btnStopWelding.Enabled = _weldingState != WeldingState.Idle;
-        btnPauseWelding.Text = _weldingState == WeldingState.Paused ? "▶  恢复" : "⏸  暂停";
+        btnStartWelding.Enabled  = _weldingState == WeldingState.Idle;
+        btnPauseWelding.Enabled  = _weldingState is WeldingState.Welding or WeldingState.Paused;
+        btnStopWelding.Enabled   = _weldingState != WeldingState.Idle;
+        btnPauseWelding.Text     = _weldingState == WeldingState.Paused ? "▶  恢复" : "⏸  暂停";
     }
 
     // ─────────────────────────────────────────────────────────
@@ -769,7 +833,6 @@ public partial class MainForm : Form
         sb.Append(']');
         string json = sb.ToString();
 
-        // 先尝试命名管道，失败则写入 JSON 文件作为备用
         bool sent = false;
         try
         {
@@ -795,26 +858,26 @@ public partial class MainForm : Form
     // ─────────────────────────────────────────────────────────
     private void SetStatus(string text, Color color)
     {
-        lblState.Text = text;
+        lblState.Text     = text;
         lblState.ForeColor = color;
     }
 
     private void SetWeldStatus(string text, Color color)
     {
-        lblWeldStatus.Text = text;
+        lblWeldStatus.Text      = text;
         lblWeldStatus.ForeColor = color;
     }
 
     private void ResetButtonStates()
     {
-        btnInitialize.Enabled = true;
-        btnEnumerate.Enabled = false;
-        btnConnect.Enabled = false;
-        btnDisconnect.Enabled = false;
-        btnStartGrab.Enabled = false;
-        btnStopGrab.Enabled = false;
-        btnSetExposure.Enabled = false;
-        btnGetExposure.Enabled = false;
+        btnInitialize.Enabled   = true;
+        btnEnumerate.Enabled    = false;
+        btnConnect.Enabled      = false;
+        btnDisconnect.Enabled   = false;
+        btnStartGrab.Enabled    = false;
+        btnStopGrab.Enabled     = false;
+        btnSetExposure.Enabled  = false;
+        btnGetExposure.Enabled  = false;
         txtExposureTime.Enabled = false;
     }
 
@@ -826,18 +889,19 @@ public partial class MainForm : Form
             if (_camera != null)
             {
                 _camera.OnFrameReceived -= OnFrameReceived;
-                _camera.OnLog -= AppendLog;
+                _camera.OnLog           -= AppendLog;
                 _camera.Dispose();
             }
         }
         catch { }
         try { _manager?.Dispose(); } catch { }
+        picZoom.Image?.Dispose();
     }
 }
 
 public class DeviceItem
 {
     public ICameraProvider Provider { get; set; } = null!;
-    public CameraDeviceInfo Info { get; set; } = null!;
+    public CameraDeviceInfo Info    { get; set; } = null!;
     public override string ToString() => $"{Info.Model} (SN:{Info.SerialNumber})";
 }

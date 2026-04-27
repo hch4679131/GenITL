@@ -78,11 +78,19 @@ public partial class CalibrationForm : Form
         btnCompute.Click   += BtnCompute_Click;
         btnSaveApply.Click += BtnSaveApply_Click;
 
+        // 结果区自适应日志文本框
+        grpResult.Resize += GrpResult_Resize;
+
         // TCP 事件（跨线程）
         _tcp.LogOutput    += (_, msg) => SafeLog(msg);
         _tcp.DataReceived += (_, msg) => SafeLog($"[机器人] {msg}");
 
         FormClosing += (_, _) => _tcp.Dispose();
+    }
+
+    private void GrpResult_Resize(object? sender, EventArgs e)
+    {
+        txtTcpLog.Size = new Size(grpResult.Width - 16, grpResult.Height - 62);
     }
 
     private void PopulateGrid()
